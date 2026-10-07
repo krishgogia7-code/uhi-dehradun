@@ -9,6 +9,10 @@ temperature (LST), links it to land cover, and tests whether machine learning
 can estimate temperature from land-cover indices — all shown in an interactive
 dashboard.
 
+**🔴 LIVE:** interactive dashboard → **https://uhi-dehradun.streamlit.app**
+(showcase site → https://uhi-dashboard-kohl.vercel.app · code →
+https://github.com/krishgogia7-code/uhi-dehradun)
+
 ---
 
 ## What it does (matches the presentation objectives)
@@ -120,18 +124,23 @@ plan.
 - Maps: the dashboard (screenshot a date), plus the median composite GeoTIFF
   from the GEE export for a full-resolution map in QGIS.
 
-## Put it online (Vercel)
+## Put it online (already done ✅)
 
-A static, shareable version of the project (all charts + maps) is deployed here:
+- **Interactive dashboard (Streamlit Community Cloud):**
+  **https://uhi-dehradun.streamlit.app** — it reads this repo, so any
+  `git push` to `main` redeploys it automatically (a couple of minutes).
+  Free tier: the app sleeps after ~a week of no visits and wakes up on the
+  first visit (about a minute).
+- **Static showcase site (Vercel):** https://uhi-dashboard-kohl.vercel.app
 
-**https://uhi-dashboard-kohl.vercel.app**
-
-To refresh it after the data changes (e.g. the real GEE export arrives):
+To refresh the static site after the data changes (e.g. the real GEE export
+arrives):
 ```
 python make_site.py
 cd uhi-dashboard
 vercel deploy --prod --yes
 ```
+To update the live dashboard: just `git push` (after re-running the steps).
 
 ## Troubleshooting
 
