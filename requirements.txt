@@ -1,6 +1,8 @@
-# pandas is pinned: the newest pandas (4.x) is blocked by Windows Smart App
-# Control on some machines; the widely-used 2.2.3 builds run everywhere.
-pandas==2.2.3
+# pandas: Windows machines with Smart App Control block the newest pandas
+# DLLs, so Windows gets the widely-trusted 2.2.3 build. Cloud hosts (Streamlit
+# Community Cloud builds on Python 3.14) need a newer release with wheels.
+pandas==2.2.3; sys_platform == "win32"
+pandas>=2.3,<4; sys_platform != "win32"
 numpy>=1.24
 scikit-learn>=1.3
 plotly>=5.18
