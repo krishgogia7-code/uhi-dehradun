@@ -13,6 +13,7 @@ import joblib
 import numpy as np
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 
 ROOT = Path(__file__).parent
@@ -70,6 +71,27 @@ clean, uhi, preds, metrics = (load_clean(), load_uhi(),
 models = load_models()
 is_sample = SOURCE_TXT.exists() and "SAMPLE" in SOURCE_TXT.read_text(encoding="utf-8")
 
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def geocode(query):
+    """Look up a place name with the free OpenStreetMap Nominatim service."""
+    import urllib.parse
+    import urllib.request
+    url = "https://nominatim.openstreetmap.org/search?" + urllib.parse.urlencode(
+        {"q": query, "format": "json", "limit": 1})
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "uhi-dehradun-dashboard/1.0 (student project)"})
+    try:
+        with urllib.request.urlopen(req, timeout=8) as r:
+            hits = json.loads(r.read().decode())
+    except Exception:
+        return None
+    if not hits:
+        return None
+    h = hits[0]
+    return {"lat": float(h["lat"]), "lon": float(h["lon"]),
+            "name": h.get("display_name", query)}
+
 # ------------------------------- sidebar ----------------------------------
 st.sidebar.title("\U0001F321\uFE0F UHI \u2014 Dehradun")
 st.sidebar.caption("Urban Heat Island Analysis using Satellite Remote Sensing & ML")
@@ -79,22 +101,12 @@ if is_sample:
 
 dates = sorted(clean["date"].unique())
 date = st.sidebar.select_slider("Date", options=dates, value=dates[-1])
-layer = st.sidebar.radio("Map colour shows",
-                         ["LST (observed)", "UHI vs reference",
-                          "LST (estimated by model)"])
 model = st.sidebar.selectbox("Model used for estimates",
                              list(metrics["models"].keys()),
                              index=len(metrics["models"]) - 1)
 
 day = clean[clean["date"] == date].copy()
-zcol, zlabel, cscale = {
-    "LST (observed)": ("lst_c", "Observed LST (deg C)", "Inferno"),
-    "UHI vs reference": ("uhi_c", "UHI (deg C vs reference)", "RdBu_r"),
-    "LST (estimated by model)": (None, "Estimated LST (deg C)", "Inferno"),
-}[layer]
-if zcol is None:  # model estimate for the selected date
-    day["estimated_c"] = models[model].predict(day[FEATURES])
-    zcol = "estimated_c"
+day["estimated_c"] = models[model].predict(day[FEATURES])
 
 tab_over, tab_map, tab_uhi, tab_ml, tab_method = st.tabs(
     ["Overview", "Maps", "UHI analysis", "Model results", "Method & data"])
@@ -132,35 +144,105 @@ with tab_over:
 
 # ------------------------------- maps --------------------------------------
 with tab_map:
-    mode = st.radio("Map type",
+    mode = st.radio("Map style",
                     ["Interactive city map (needs internet)",
                      "Offline grid map"],
                     horizontal=True)
-    if mode.startswith("Interactive"):
-        center = {"lat": 30.31, "lon": 78.035}
-        common = dict(lat="lat", lon="lon", z=zcol, radius=24, center=center,
-                      zoom=10.8, height=580, color_continuous_scale=cscale,
-                      hover_data=["ndvi", "ndbi", "land_class"])
-        if hasattr(px, "density_mapbox"):       # plotly 5.x (Mapbox)
-            fig = px.density_mapbox(day, mapbox_style="open-street-map", **common)
-        else:                                   # plotly 6+ (MapLibre)
-            fig = px.density_map(day, map_style="open-street-map", **common)
-        fig.update_layout(margin=dict(l=0, r=0, t=0, b=0),
-                          coloraxis_colorbar=dict(title=zlabel))
-    else:
-        grid = day.pivot_table(index="lat", columns="lon", values=zcol,
-                               aggfunc="mean")
-        fig = px.imshow(grid, origin="lower", aspect="equal",
-                        color_continuous_scale=cscale, height=520,
-                        labels=dict(x="longitude", y="latitude", color=zlabel))
-    st.plotly_chart(fig, use_container_width=True)
-    st.caption(f"{zlabel} \u2014 {date} \u00b7 each cell is a {30 if not is_sample else '~290'} m "
-               f" Landsat pixel over Dehradun"
-               + (" (sample data, synthetic)" if is_sample else ""))
+    interactive = mode.startswith("Interactive")
 
-    if zcol == "uhi_c":
-        st.info("Blue = cooler than the non-urban reference, red = hotter. "
-                "This is the surface heat-island pattern (slide 5 formula).")
+    # ---- location search (jumps to any place on every map below) ----
+    q = st.text_input("\U0001F4CD Search a location to focus the maps",
+                      placeholder="try: Clock Tower Dehradun, Mussoorie, ISBT Dehradun ...",
+                      key="loc_q")
+    b1, _ = st.columns([1, 5])
+    with b1:
+        if st.button("Reset to Dehradun"):
+            st.session_state.loc_q = ""
+            st.rerun()
+    loc = None
+    if q.strip():
+        loc = geocode(q.strip())
+        if loc is None:
+            st.warning("No match found (or the search service is unreachable) "
+                       "\u2014 showing all of Dehradun.")
+        else:
+            st.success(f"\U0001F4CD Focused on: {loc['name']}")
+
+    center = {"lat": 30.31, "lon": 78.035}
+    zoom = 10.8
+    crop = day
+    if loc:
+        center = {"lat": loc["lat"], "lon": loc["lon"]}
+        zoom = 13.5
+        box = 0.02  # about 2 km around the searched point
+        near = day[day["lat"].between(loc["lat"] - box, loc["lat"] + box) &
+                   day["lon"].between(loc["lon"] - box, loc["lon"] + box)]
+        if len(near) >= 15:
+            crop = near
+        else:
+            st.caption("No satellite pixels fall in this zoom area on this "
+                       "date \u2014 showing the whole city instead.")
+
+    pixel_note = (f"{date} \u00b7 each cell \u2248 a 290 m Landsat pixel"
+                  + (" (sample data, synthetic)" if is_sample else ""))
+
+    def one_map(title, note, col, label, cscale):
+        """One map section: interactive city map or offline grid."""
+        st.subheader(title)
+        st.caption(note)
+        if interactive:
+            common = dict(lat="lat", lon="lon", z=col, radius=24, center=center,
+                          zoom=zoom, height=480, color_continuous_scale=cscale,
+                          hover_data=["ndvi", "ndbi", "land_class"])
+            if hasattr(px, "density_mapbox"):        # plotly 5.x (Mapbox)
+                fig = px.density_mapbox(crop, mapbox_style="open-street-map", **common)
+            else:                                    # plotly 6+ (MapLibre)
+                fig = px.density_map(crop, map_style="open-street-map", **common)
+            if loc is not None:
+                T = go.Scattermapbox if hasattr(px, "density_mapbox") else go.Scattermap
+                short = ", ".join(loc["name"].split(", ")[:2])
+                fig.add_trace(T(lat=[loc["lat"]], lon=[loc["lon"]],
+                                mode="markers+text",
+                                marker=dict(size=15, color="#00e5ff"),
+                                text=["\U0001F4CD " + short],
+                                textposition="top center", showlegend=False,
+                                name=loc["name"]))
+            fig.update_layout(margin=dict(l=0, r=0, t=0, b=0),
+                              coloraxis_colorbar=dict(title=label))
+        else:
+            grid = crop.pivot_table(index="lat", columns="lon", values=col,
+                                    aggfunc="mean")
+            fig = px.imshow(grid, origin="lower", aspect="equal",
+                            color_continuous_scale=cscale, height=440,
+                            labels=dict(x="longitude", y="latitude", color=label))
+        st.plotly_chart(fig, use_container_width=True)
+
+    # ---- temperature sections ----
+    one_map("\U0001F321\uFE0F Surface temperature (LST)",
+            "Observed Landsat land-surface temperature \u00b7 " + pixel_note,
+            "lst_c", "LST (deg C)", "Inferno")
+    one_map("\U0001F534 UHI vs non-urban reference",
+            "Red = hotter than the reference, blue = cooler (slide 5 formula) \u00b7 "
+            + pixel_note,
+            "uhi_c", "UHI (deg C)", "RdBu_r")
+    one_map("\U0001F916 LST estimated by model",
+            f"{model} estimate for this date \u00b7 " + pixel_note,
+            "estimated_c", "Estimated LST (deg C)", "Inferno")
+
+    # ---- the three land-cover indices, one section each ----
+    st.divider()
+    st.markdown("##### Land-cover indices \u2014 what makes some areas hot")
+    one_map("\U0001F4A7 Water index (NDWI)",
+            "High values = open water (rivers, ponds) \u2014 the coolest surfaces \u00b7 "
+            + pixel_note,
+            "ndwi", "NDWI (water)", "Blues")
+    one_map("\U0001F3D7\uFE0F Built-up index (NDBI)",
+            "High values = concrete / built-up \u2014 these become the hot zones \u00b7 "
+            + pixel_note,
+            "ndbi", "NDBI (built-up)", "YlOrRd")
+    one_map("\U0001F33F Vegetation index (NDVI)",
+            "High values = parks and forest \u2014 natural cooling \u00b7 " + pixel_note,
+            "ndvi", "NDVI (vegetation)", "Greens")
 
 # ------------------------------- UHI analysis ------------------------------
 with tab_uhi:
