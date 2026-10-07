@@ -74,11 +74,17 @@ is_sample = SOURCE_TXT.exists() and "SAMPLE" in SOURCE_TXT.read_text(encoding="u
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def geocode(query):
-    """Look up a place name with the free OpenStreetMap Nominatim service."""
+    """Look up a place name with the free OpenStreetMap Nominatim service.
+
+    Bounded to the Dehradun area with a viewbox, so 'Station Road' resolves
+    to Dehradun's - never to some other city.
+    """
     import urllib.parse
     import urllib.request
     url = "https://nominatim.openstreetmap.org/search?" + urllib.parse.urlencode(
-        {"q": query, "format": "json", "limit": 1})
+        {"q": query, "format": "json", "limit": 1,
+         "viewbox": "77.92,30.42,78.16,30.22",   # left, top, right, bottom
+         "bounded": 1})
     req = urllib.request.Request(url, headers={
         "User-Agent": "uhi-dehradun-dashboard/1.0 (student project)"})
     try:
@@ -108,8 +114,33 @@ model = st.sidebar.selectbox("Model used for estimates",
 day = clean[clean["date"] == date].copy()
 day["estimated_c"] = models[model].predict(day[FEATURES])
 
-tab_over, tab_map, tab_uhi, tab_ml, tab_method = st.tabs(
-    ["Overview", "Maps", "UHI analysis", "Model results", "Method & data"])
+# ------------------------------- page furniture -----------------------------
+CSS = """
+<style>
+.uhi-hero {background: linear-gradient(120deg, #0e2a47, #1b6ca8); color: #fff;
+  border-radius: 14px; padding: 18px 24px; margin: 4px 0 14px;}
+.uhi-hero h1 {margin: 0; font-size: 1.6rem; color: #fff; letter-spacing: .3px;}
+.uhi-hero p {margin: 6px 0 0; opacity: .92; font-size: .95rem;}
+div[data-testid="stMetric"] {background: rgba(27,108,168,.08);
+  border: 1px solid rgba(27,108,168,.28); border-radius: 12px; padding: 12px 14px;}
+div[data-testid="stMetricValue"] {font-size: 1.55rem;}
+h3 {border-left: 4px solid #1b6ca8; padding-left: 10px;}
+.stButton > button {border-radius: 10px; font-weight: 600;}
+div[data-testid="stTextInput"] input {border-radius: 10px;}
+</style>
+"""
+HERO = """
+<div class="uhi-hero">
+<h1>\U0001F321\uFE0F Urban Heat Island \u2014 Dehradun</h1>
+<p>Landsat 8/9 surface temperature \u00b7 UHI vs a documented non-urban reference \u00b7
+ML estimates validated on held-out dates \u00b7 explore with the tabs below</p>
+</div>
+"""
+st.markdown(CSS, unsafe_allow_html=True)
+st.markdown(HERO, unsafe_allow_html=True)
+
+tab_over, tab_map, tab_uhi, tab_cmp, tab_ml, tab_method = st.tabs(
+    ["Overview", "Maps", "UHI analysis", "Compare dates", "Model results", "Method & data"])
 
 # ------------------------------- overview ----------------------------------
 with tab_over:
@@ -163,8 +194,9 @@ with tab_map:
     if q.strip():
         loc = geocode(q.strip())
         if loc is None:
-            st.warning("No match found (or the search service is unreachable) "
-                       "\u2014 showing all of Dehradun.")
+            st.warning("\U0001F4CD Not available \u2014 no match inside the Dehradun "
+                       "area. Try a local landmark, e.g. 'Clock Tower Dehradun', "
+                       "'ISBT Dehradun', 'Forest Research Institute'.")
         else:
             st.success(f"\U0001F4CD Focused on: {loc['name']}")
 
@@ -276,6 +308,100 @@ with tab_uhi:
         st.caption("`urban` = built-up pixels (NDBI high, NDVI low) \u00b7 "
                    "`reference` = vegetated, non-water, low-slope pixels at "
                    "comparable elevation.")
+
+# ------------------------------- compare dates ------------------------------
+with tab_cmp:
+    st.markdown("##### \u2696\uFE0F Compare two time periods")
+    st.caption("Pick any two dates \u2014 the cards show how the heat island changed "
+               "between them, and both maps share the same colour scale so they "
+               "are directly comparable. Period A defaults to the date selected "
+               "in the sidebar.")
+
+    cA, cB = st.columns(2)
+    dateA = cA.selectbox("Period A", dates, index=dates.index(date))
+    dateB = cB.selectbox("Period B", dates, index=0)
+    if dateA == dateB:
+        st.info("Period A and B are the same date \u2014 pick two different dates "
+                "for a real comparison.")
+
+    uhi_ix = uhi.set_index("date")
+
+    def pstats(dstr):
+        row = uhi_ix.loc[dstr]
+        dsel = clean[clean["date"] == dstr]
+        return {"mean": float(row["city_mean_lst"]),
+                "urban": float(row["urban_mean_lst"]),
+                "ref": float(row["reference_mean_lst"]),
+                "uhi": float(row["uhi_intensity"]),
+                "hottest": float(dsel["lst_c"].max())}
+
+    sA, sB = pstats(dateA), pstats(dateB)
+
+    colA, colB = st.columns(2)
+    with colA:
+        st.markdown(f"**\U0001F4C5 Period A \u2014 {dateA}**")
+        st.metric("Mean city LST", f"{sA['mean']:.2f} \u00b0C")
+        st.metric("Urban mean LST", f"{sA['urban']:.2f} \u00b0C")
+        st.metric("Reference mean LST", f"{sA['ref']:.2f} \u00b0C")
+        st.metric("UHI intensity", f"{sA['uhi']:+.2f} \u00b0C")
+        st.metric("Hottest pixel", f"{sA['hottest']:.2f} \u00b0C")
+    with colB:
+        st.markdown(f"**\U0001F4C5 Period B \u2014 {dateB}**")
+        st.metric("Mean city LST", f"{sB['mean']:.2f} \u00b0C",
+                  delta=f"{sB['mean'] - sA['mean']:+.2f} \u00b0C vs A",
+                  delta_color="inverse")
+        st.metric("Urban mean LST", f"{sB['urban']:.2f} \u00b0C",
+                  delta=f"{sB['urban'] - sA['urban']:+.2f} \u00b0C vs A",
+                  delta_color="inverse")
+        st.metric("Reference mean LST", f"{sB['ref']:.2f} \u00b0C",
+                  delta=f"{sB['ref'] - sA['ref']:+.2f} \u00b0C vs A",
+                  delta_color="inverse")
+        st.metric("UHI intensity", f"{sB['uhi']:+.2f} \u00b0C",
+                  delta=f"{sB['uhi'] - sA['uhi']:+.2f} \u00b0C vs A",
+                  delta_color="inverse")
+        st.metric("Hottest pixel", f"{sB['hottest']:.2f} \u00b0C",
+                  delta=f"{sB['hottest'] - sA['hottest']:+.2f} \u00b0C vs A",
+                  delta_color="inverse")
+
+    st.info(f"From {dateA} to {dateB}: mean surface temperature changed by "
+            f"{sB['mean'] - sA['mean']:+.2f} \u00b0C, and the heat island went from "
+            f"{sA['uhi']:+.2f} \u00b0C to {sB['uhi']:+.2f} \u00b0C "
+            f"({sB['uhi'] - sA['uhi']:+.2f} \u00b0C change).")
+
+    def side_by_side(col_name, label, scale):
+        gA = clean[clean["date"] == dateA].pivot_table(
+            index="lat", columns="lon", values=col_name, aggfunc="mean")
+        gB = clean[clean["date"] == dateB].pivot_table(
+            index="lat", columns="lon", values=col_name, aggfunc="mean")
+        both = pd.concat([gA, gB])
+        vmin = float(np.nanmin(both.values))
+        vmax = float(np.nanmax(both.values))
+        left, right = st.columns(2)
+        for cont, gstr, g in ((left, dateA, gA), (right, dateB, gB)):
+            with cont:
+                st.caption(gstr)
+                fig = px.imshow(g, origin="lower", aspect="equal",
+                                color_continuous_scale=scale,
+                                zmin=vmin, zmax=vmax, height=330,
+                                labels=dict(x="longitude", y="latitude", color=label))
+                fig.update_layout(margin=dict(l=0, r=0, t=0, b=0))
+                st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown("##### Surface temperature \u2014 same colour scale on both")
+    side_by_side("lst_c", "LST (deg C)", "Inferno")
+    st.markdown("##### UHI vs reference \u2014 same colour scale on both")
+    side_by_side("uhi_c", "UHI (deg C)", "RdBu_r")
+
+    fig = px.line(uhi, x="date", y="uhi_intensity", markers=True,
+                  labels={"uhi_intensity": "UHI intensity (deg C)", "date": "Date"})
+    fig.add_vline(x=dateA, line_dash="dot", line_color="#1b6ca8",
+                  annotation_text="A", annotation_position="top")
+    fig.add_vline(x=dateB, line_dash="dot", line_color="#d95f02",
+                  annotation_text="B", annotation_position="top")
+    fig.update_layout(height=330, margin=dict(t=10, b=0))
+    st.plotly_chart(fig, use_container_width=True)
+    st.caption("The dotted lines mark the two periods you picked on the full "
+               "UHI-intensity timeline.")
 
 # ------------------------------- model results -----------------------------
 with tab_ml:
