@@ -247,11 +247,7 @@ with tab_map:
             fig = px.imshow(grid, origin="lower", aspect="equal",
                             color_continuous_scale=cscale, height=440,
                             labels=dict(x="longitude", y="latitude", color=label))
-        st.plotly_chart(
-    fig,
-    use_container_width=True,
-    key=f"{col_name}_{label}_{date_value}"
-)
+        st.plotly_chart(fig, use_container_width=True)
 
     # ---- temperature sections ----
     one_map("\U0001F321\uFE0F Surface temperature (LST)",
