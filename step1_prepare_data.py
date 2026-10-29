@@ -33,27 +33,16 @@ ROOT = Path(__file__).parent
 DATA_DIR = ROOT / "data"
 
 
+
 def find_input_csvs(data_dir: Path):
-    """Prefer the new 2020–2025 GEE export."""
+    """Use only the new 2020–2025 GEE export."""
     new_file = data_dir / "dehradun_gee_export_2020_2025.csv"
 
     if new_file.exists():
         return [new_file]
 
-    old_file = data_dir / "dehradun_gee_export.csv"
-
-    if old_file.exists():
-        print("WARNING: New dataset not found. Using the old GEE export.")
-        return [old_file]
-
-    sample_files = sorted(data_dir.glob("SAMPLE*.csv"))
-
-    if sample_files:
-        print("WARNING: No real dataset found. Using sample data.")
-        return sample_files
-
+    print("ERROR: New 2020–2025 dataset not found.")
     return []
-
 
 def clean(df: pd.DataFrame) -> pd.DataFrame:
     n0 = len(df)
