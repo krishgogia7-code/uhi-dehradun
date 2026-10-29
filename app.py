@@ -368,40 +368,121 @@ with tab_cmp:
             f"{sA['uhi']:+.2f} \u00b0C to {sB['uhi']:+.2f} \u00b0C "
             f"({sB['uhi'] - sA['uhi']:+.2f} \u00b0C change).")
 
+    
     def side_by_side(col_name, label, scale):
-        gA = clean[clean["date"] == dateA].pivot_table(
-            index="lat", columns="lon", values=col_name, aggfunc="mean")
-        gB = clean[clean["date"] == dateB].pivot_table(
-            index="lat", columns="lon", values=col_name, aggfunc="mean")
-        both = pd.concat([gA, gB])
-        vmin = float(np.nanmin(both.values))
-        vmax = float(np.nanmax(both.values))
+        # Select the observations for each chosen date.
+        gA = clean.loc[clean["date"] == dateA, ["lat", "lon", col_name]].copy()
+        gB = clean.loc[clean["date"] == dateB, ["lat", "lon", col_name]].copy()
+
+        # Reduce map resolution for display only.
+        # The original dataset remains unchanged.
+        def make_grid(df):
+            if df.empty:
+                return pd.DataFrame()
+
+            lat_min, lat_max = df["lat"].min(), df["lat"].max()
+            lon_min, lon_max = df["lon"].min(), df["lon"].max()
+
+            # About 100 bins in each direction.
+            lat_bins = np.linspace(lat_min, lat_max + 1e-9, 101)
+            lon_bins = np.linspace(lon_min, lon_max + 1e-9, 101)
+
+            df["lat_bin"] = pd.cut(
+                df["lat"], bins=lat_bins, labels=False, include_lowest=True
+            )
+            df["lon_bin"] = pd.cut(
+                df["lon"], bins=lon_bins, labels=False, include_lowest=True
+            )
+
+            grid = df.pivot_table(
+                index="lat_bin",
+                columns="lon_bin",
+                values=col_name,
+                aggfunc="mean"
+            )
+            return grid
+
+        gA = make_grid(gA)
+        gB = make_grid(gB)
+
+        if gA.empty or gB.empty:
+            st.warning("Not enough data to create both maps for these dates.")
+            return
+
+        # Use one shared colour range for a fair comparison.
+        all_values = np.concatenate([
+            gA.to_numpy().ravel(),
+            gB.to_numpy().ravel()
+        ])
+        all_values = all_values[np.isfinite(all_values)]
+
+        if len(all_values) == 0:
+            st.warning("No valid temperature values found for these dates.")
+            return
+
+        vmin = float(np.min(all_values))
+        vmax = float(np.max(all_values))
+
         left, right = st.columns(2)
+
         for cont, gstr, g in ((left, dateA, gA), (right, dateB, gB)):
             with cont:
                 st.caption(gstr)
-                fig = px.imshow(g, origin="lower", aspect="equal",
-                                color_continuous_scale=scale,
-                                zmin=vmin, zmax=vmax, height=330,
-                                labels=dict(x="longitude", y="latitude", color=label))
+                fig = px.imshow(
+                    g,
+                    origin="lower",
+                    aspect="auto",
+                    color_continuous_scale=scale,
+                    zmin=vmin,
+                    zmax=vmax,
+                    height=330,
+                    labels={
+                        "x": "longitude grid",
+                        "y": "latitude grid",
+                        "color": label
+                    }
+                )
                 fig.update_layout(margin=dict(l=0, r=0, t=0, b=0))
                 st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown("##### Surface temperature \u2014 same colour scale on both")
-    side_by_side("lst_c", "LST (deg C)", "Inferno")
-    st.markdown("##### UHI vs reference \u2014 same colour scale on both")
-    side_by_side("uhi_c", "UHI (deg C)", "RdBu_r")
+    st.markdown("##### Surface temperature — same colour scale on both")
+    side_by_side("lst_c", "LST (°C)", "Inferno")
 
-    fig = px.line(uhi, x="date", y="uhi_intensity", markers=True,
-                  labels={"uhi_intensity": "UHI intensity (deg C)", "date": "Date"})
-    fig.add_vline(x=dateA, line_dash="dot", line_color="#1b6ca8",
-                  annotation_text="A", annotation_position="top")
-    fig.add_vline(x=dateB, line_dash="dot", line_color="#d95f02",
-                  annotation_text="B", annotation_position="top")
+    st.markdown("##### UHI vs reference — same colour scale on both")
+    side_by_side("uhi_c", "UHI (°C)", "RdBu_r")
+
+    fig = px.line(
+        uhi,
+        x="date",
+        y="uhi_intensity",
+        markers=True,
+        labels={
+            "uhi_intensity": "UHI intensity (°C)",
+            "date": "Date"
+        }
+    )
+    fig.add_vline(
+        x=dateA,
+        line_dash="dot",
+        line_color="#1b6ca8",
+        annotation_text="A",
+        annotation_position="top"
+    )
+    fig.add_vline(
+        x=dateB,
+        line_dash="dot",
+        line_color="#d95f02",
+        annotation_text="B",
+        annotation_position="top"
+    )
     fig.update_layout(height=330, margin=dict(t=10, b=0))
     st.plotly_chart(fig, use_container_width=True)
-    st.caption("The dotted lines mark the two periods you picked on the full "
-               "UHI-intensity timeline.")
+
+    st.caption(
+        "The dotted lines mark the two periods you picked on the full "
+        "UHI-intensity timeline."
+    )
+
 
 # ------------------------------- model results -----------------------------
 with tab_ml:
